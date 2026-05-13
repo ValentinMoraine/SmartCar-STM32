@@ -22,6 +22,11 @@ static void MX_TIM2_Init(void);
 static void MX_TIM5_Init(void);
 static void Error_Handler(void);
 
+void SysTick_Handler(void)
+{
+    HAL_IncTick();
+}
+
 int main(void)
 {
     HAL_Init();
@@ -66,7 +71,7 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
     RCC_OscInitStruct.MSIState = RCC_MSI_ON;
     RCC_OscInitStruct.MSICalibrationValue = 0;
-    RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6; // 4 MHz
+    RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
     RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_MSI;
     RCC_OscInitStruct.PLL.PLLM = 1;
@@ -109,34 +114,29 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_WritePin(MOTOR_IN4_GPIO_PORT, MOTOR_IN4_PIN, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(HCSR04_TRIG_GPIO_PORT, HCSR04_TRIG_PIN, GPIO_PIN_RESET);
 
-    // LED LD2
     GPIO_InitStruct.Pin = LED_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LED_GPIO_PORT, &GPIO_InitStruct);
 
-    // Directions moteur gauche : IN1, IN2
     GPIO_InitStruct.Pin = MOTOR_IN1_PIN | MOTOR_IN2_PIN | MOTOR_IN3_PIN | MOTOR_IN4_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    // HC-SR04 TRIG
     GPIO_InitStruct.Pin = HCSR04_TRIG_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(HCSR04_TRIG_GPIO_PORT, &GPIO_InitStruct);
 
-    // HC-SR04 ECHO
     GPIO_InitStruct.Pin = HCSR04_ECHO_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(HCSR04_ECHO_GPIO_PORT, &GPIO_InitStruct);
 
-    // PWM PA0/PA1 : TIM2 CH1/CH2
     GPIO_InitStruct.Pin = MOTOR_LEFT_PWM_PIN | MOTOR_RIGHT_PWM_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -144,7 +144,6 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
     HAL_GPIO_Init(MOTOR_PWM_GPIO_PORT, &GPIO_InitStruct);
 
-    // USART2 PA2/PA3
     GPIO_InitStruct.Pin = UART_TX_PIN | UART_RX_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -183,9 +182,9 @@ static void MX_TIM2_Init(void)
     __HAL_RCC_TIM2_CLK_ENABLE();
 
     htim2.Instance = TIM2;
-    htim2.Init.Prescaler = 79;      // 80 MHz / 80 = 1 MHz
+    htim2.Init.Prescaler = 79;
     htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim2.Init.Period = PWM_PERIOD; // 1 MHz / 1000 = 1 kHz
+    htim2.Init.Period = PWM_PERIOD;
     htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 
@@ -212,7 +211,7 @@ static void MX_TIM5_Init(void)
     __HAL_RCC_TIM5_CLK_ENABLE();
 
     htim5.Instance = TIM5;
-    htim5.Init.Prescaler = 79; // 80 MHz / 80 = 1 MHz, donc 1 tick = 1 µs
+    htim5.Init.Prescaler = 79;
     htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
     htim5.Init.Period = 0xFFFFFFFFU;
     htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;

@@ -24,7 +24,7 @@ void SmartCar_Init(SmartCar *car,
     car->obstacleThresholdCm = DEFAULT_OBSTACLE_THRESHOLD_CM;
     car->lastMeasureTickMs = 0U;
     car->measurePeriodMs = DEFAULT_MEASURE_PERIOD_MS;
-    car->sensorOk = true;
+    car->sensorOk = false;
 
     MotorDriver_Init(&car->motors,
                      pwmTimer,
@@ -47,7 +47,11 @@ void SmartCar_Task(SmartCar *car)
 
         if (!SmartCar_ReadDistanceNow(car)) {
             MotorDriver_Stop(&car->motors);
-            car->state = CAR_STATE_FAULT;
+            if (car->state == CAR_STATE_MANUAL) {
+                car->state = CAR_STATE_OBSTACLE;
+            } else {
+                car->state = CAR_STATE_STOPPED;
+            }
             return;
         }
 
@@ -143,7 +147,7 @@ void SmartCar_Reset(SmartCar *car)
     MotorDriver_Stop(&car->motors);
 
     if (!SmartCar_ReadDistanceNow(car)) {
-        car->state = CAR_STATE_FAULT;
+        car->state = CAR_STATE_STOPPED;
         return;
     }
 

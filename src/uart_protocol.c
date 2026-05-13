@@ -4,8 +4,32 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define UART_TX_TIMEOUT_MS 50U
 #define UART_RX_IDLE_FRAME_MS 20U
+#define UART_TX_SPIN_GUARD 1000000U
+
+static void process_rx_char(UartProtocol *protocol, uint8_t c)
+{
+    if (c == '\n' || c == '\r' || c == '\0') {
+        if ((protocol->lineIndex > 0U) && !protocol->pendingReady) {
+            protocol->lineBuffer[protocol->lineIndex] = '\0';
+            strncpy(protocol->pendingLine, protocol->lineBuffer, sizeof(protocol->pendingLine));
+            protocol->pendingLine[sizeof(protocol->pendingLine) - 1U] = '\0';
+            protocol->pendingReady = true;
+        }
+
+        protocol->lineIndex = 0U;
+        memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+    } else {
+        if (protocol->lineIndex < (UART_RX_LINE_MAX - 1U)) {
+            protocol->lineBuffer[protocol->lineIndex++] = (char)c;
+            protocol->lastRxTickMs = HAL_GetTick();
+        } else {
+            protocol->lineIndex = 0U;
+            memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+            protocol->lastRxTickMs = 0U;
+        }
+    }
+}
 
 static void arm_rx_if_needed(UartProtocol *protocol)
 {
@@ -16,6 +40,31 @@ static void arm_rx_if_needed(UartProtocol *protocol)
     const HAL_StatusTypeDef status = HAL_UART_Receive_IT(protocol->uart, &protocol->rxByte, 1U);
     if (status == HAL_OK) {
         protocol->rxRearmPending = false;
+    }
+}
+
+static void uart_send_bytes(UART_HandleTypeDef *uart, const uint8_t *data, uint16_t length)
+{
+    if (uart == NULL || data == NULL || length == 0U) {
+        return;
+    }
+
+    for (uint16_t i = 0U; i < length; i++) {
+        uint32_t guard = UART_TX_SPIN_GUARD;
+        while (__HAL_UART_GET_FLAG(uart, UART_FLAG_TXE) == RESET) {
+            if (guard-- == 0U) {
+                return;
+            }
+        }
+
+        uart->Instance->TDR = data[i];
+    }
+
+    uint32_t guard = UART_TX_SPIN_GUARD;
+    while (__HAL_UART_GET_FLAG(uart, UART_FLAG_TC) == RESET) {
+        if (guard-- == 0U) {
+            return;
+        }
     }
 }
 
@@ -147,6 +196,17 @@ void UartProtocol_Init(UartProtocol *protocol,
 
 void UartProtocol_Task(UartProtocol *protocol)
 {
+    // Fallback path: poll RXNE in case RX interrupts are not firing reliably.
+    while (__HAL_UART_GET_FLAG(protocol->uart, UART_FLAG_RXNE) != RESET) {
+        const uint8_t c = (uint8_t)(protocol->uart->Instance->RDR & 0xFFU);
+        process_rx_char(protocol, c);
+    }
+
+    // Clear possible overrun that can stall further reception.
+    if (__HAL_UART_GET_FLAG(protocol->uart, UART_FLAG_ORE) != RESET) {
+        __HAL_UART_CLEAR_FLAG(protocol->uart, UART_CLEAR_OREF);
+    }
+
     arm_rx_if_needed(protocol);
 
     if (!protocol->pendingReady) {
@@ -189,28 +249,7 @@ void UartProtocol_RxCpltCallback(UartProtocol *protocol, UART_HandleTypeDef *uar
         return;
     }
 
-    const uint8_t c = protocol->rxByte;
-
-    if (c == '\n' || c == '\r' || c == '\0') {
-        if ((protocol->lineIndex > 0U) && !protocol->pendingReady) {
-            protocol->lineBuffer[protocol->lineIndex] = '\0';
-            strncpy(protocol->pendingLine, protocol->lineBuffer, sizeof(protocol->pendingLine));
-            protocol->pendingLine[sizeof(protocol->pendingLine) - 1U] = '\0';
-            protocol->pendingReady = true;
-        }
-
-        protocol->lineIndex = 0U;
-        memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
-    } else {
-        if (protocol->lineIndex < (UART_RX_LINE_MAX - 1U)) {
-            protocol->lineBuffer[protocol->lineIndex++] = (char)c;
-            protocol->lastRxTickMs = HAL_GetTick();
-        } else {
-            protocol->lineIndex = 0U;
-            memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
-            protocol->lastRxTickMs = 0U;
-        }
-    }
+    process_rx_char(protocol, protocol->rxByte);
 
     protocol->rxRearmPending = true;
     arm_rx_if_needed(protocol);
@@ -222,17 +261,12 @@ void UartProtocol_SendLine(UartProtocol *protocol, const char *line)
     const int length = snprintf(buffer, sizeof(buffer), "%s\r\n", line);
 
     if (length > 0) {
-        // snprintf returns the full length that would have been written.
-        // Clamp to the actual buffer size to avoid reading past the stack buffer.
         uint16_t txLength = (uint16_t)length;
         if ((size_t)length >= sizeof(buffer)) {
             txLength = (uint16_t)(sizeof(buffer) - 1U);
         }
 
-        (void)HAL_UART_Transmit(protocol->uart,
-                                (uint8_t *)buffer,
-                                txLength,
-                                UART_TX_TIMEOUT_MS);
+        uart_send_bytes(protocol->uart, (const uint8_t *)buffer, txLength);
     }
 }
 
