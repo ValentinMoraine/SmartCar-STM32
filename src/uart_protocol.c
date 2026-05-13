@@ -196,13 +196,11 @@ void UartProtocol_Init(UartProtocol *protocol,
 
 void UartProtocol_Task(UartProtocol *protocol)
 {
-    // Fallback path: poll RXNE in case RX interrupts are not firing reliably.
     while (__HAL_UART_GET_FLAG(protocol->uart, UART_FLAG_RXNE) != RESET) {
         const uint8_t c = (uint8_t)(protocol->uart->Instance->RDR & 0xFFU);
         process_rx_char(protocol, c);
     }
 
-    // Clear possible overrun that can stall further reception.
     if (__HAL_UART_GET_FLAG(protocol->uart, UART_FLAG_ORE) != RESET) {
         __HAL_UART_CLEAR_FLAG(protocol->uart, UART_CLEAR_OREF);
     }
