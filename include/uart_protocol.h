@@ -15,8 +15,11 @@ typedef struct {
 
     uint8_t rxByte;
     char lineBuffer[UART_RX_LINE_MAX];
+    char pendingLine[UART_RX_LINE_MAX];
     volatile uint16_t lineIndex;
-    volatile bool lineReady;
+    volatile bool pendingReady;
+    volatile uint32_t lastRxTickMs;
+    volatile bool rxRearmPending;
 } UartProtocol;
 
 void UartProtocol_Init(UartProtocol *protocol,

@@ -4,6 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define UART_TX_TIMEOUT_MS 50U
+#define UART_RX_IDLE_FRAME_MS 20U
+
+static void arm_rx_if_needed(UartProtocol *protocol)
+{
+    if (!protocol->rxRearmPending) {
+        return;
+    }
+
+    const HAL_StatusTypeDef status = HAL_UART_Receive_IT(protocol->uart, &protocol->rxByte, 1U);
+    if (status == HAL_OK) {
+        protocol->rxRearmPending = false;
+    }
+}
+
 static bool parse_speed(const char *text, uint8_t *speed)
 {
     char *end = NULL;
@@ -121,26 +136,48 @@ void UartProtocol_Init(UartProtocol *protocol,
     protocol->car = car;
     protocol->rxByte = 0U;
     protocol->lineIndex = 0U;
-    protocol->lineReady = false;
+    protocol->pendingReady = false;
+    protocol->lastRxTickMs = 0U;
+    protocol->rxRearmPending = true;
     memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+    memset(protocol->pendingLine, 0, sizeof(protocol->pendingLine));
 
-    HAL_UART_Receive_IT(protocol->uart, &protocol->rxByte, 1U);
+    arm_rx_if_needed(protocol);
 }
 
 void UartProtocol_Task(UartProtocol *protocol)
 {
-    if (!protocol->lineReady) {
-        return;
+    arm_rx_if_needed(protocol);
+
+    if (!protocol->pendingReady) {
+        const uint32_t now = HAL_GetTick();
+
+        __disable_irq();
+        if (!protocol->pendingReady
+            && (protocol->lineIndex > 0U)
+            && ((now - protocol->lastRxTickMs) >= UART_RX_IDLE_FRAME_MS)) {
+            protocol->lineBuffer[protocol->lineIndex] = '\0';
+            strncpy(protocol->pendingLine, protocol->lineBuffer, sizeof(protocol->pendingLine));
+            protocol->pendingLine[sizeof(protocol->pendingLine) - 1U] = '\0';
+
+            protocol->lineIndex = 0U;
+            memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+            protocol->pendingReady = true;
+        }
+        __enable_irq();
+
+        if (!protocol->pendingReady) {
+            return;
+        }
     }
 
     __disable_irq();
     char localLine[UART_RX_LINE_MAX];
-    strncpy(localLine, protocol->lineBuffer, sizeof(localLine));
+    strncpy(localLine, protocol->pendingLine, sizeof(localLine));
     localLine[sizeof(localLine) - 1U] = '\0';
 
-    protocol->lineIndex = 0U;
-    protocol->lineReady = false;
-    memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+    protocol->pendingReady = false;
+    memset(protocol->pendingLine, 0, sizeof(protocol->pendingLine));
     __enable_irq();
 
     handle_command(protocol, localLine);
@@ -154,21 +191,29 @@ void UartProtocol_RxCpltCallback(UartProtocol *protocol, UART_HandleTypeDef *uar
 
     const uint8_t c = protocol->rxByte;
 
-    if (c == '\n' || c == '\r') {
-        if (protocol->lineIndex > 0U) {
+    if (c == '\n' || c == '\r' || c == '\0') {
+        if ((protocol->lineIndex > 0U) && !protocol->pendingReady) {
             protocol->lineBuffer[protocol->lineIndex] = '\0';
-            protocol->lineReady = true;
+            strncpy(protocol->pendingLine, protocol->lineBuffer, sizeof(protocol->pendingLine));
+            protocol->pendingLine[sizeof(protocol->pendingLine) - 1U] = '\0';
+            protocol->pendingReady = true;
         }
-    } else if (!protocol->lineReady) {
+
+        protocol->lineIndex = 0U;
+        memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+    } else {
         if (protocol->lineIndex < (UART_RX_LINE_MAX - 1U)) {
             protocol->lineBuffer[protocol->lineIndex++] = (char)c;
+            protocol->lastRxTickMs = HAL_GetTick();
         } else {
             protocol->lineIndex = 0U;
-            protocol->lineReady = false;
+            memset(protocol->lineBuffer, 0, sizeof(protocol->lineBuffer));
+            protocol->lastRxTickMs = 0U;
         }
     }
 
-    HAL_UART_Receive_IT(protocol->uart, &protocol->rxByte, 1U);
+    protocol->rxRearmPending = true;
+    arm_rx_if_needed(protocol);
 }
 
 void UartProtocol_SendLine(UartProtocol *protocol, const char *line)
@@ -177,7 +222,17 @@ void UartProtocol_SendLine(UartProtocol *protocol, const char *line)
     const int length = snprintf(buffer, sizeof(buffer), "%s\r\n", line);
 
     if (length > 0) {
-        HAL_UART_Transmit(protocol->uart, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+        // snprintf returns the full length that would have been written.
+        // Clamp to the actual buffer size to avoid reading past the stack buffer.
+        uint16_t txLength = (uint16_t)length;
+        if ((size_t)length >= sizeof(buffer)) {
+            txLength = (uint16_t)(sizeof(buffer) - 1U);
+        }
+
+        (void)HAL_UART_Transmit(protocol->uart,
+                                (uint8_t *)buffer,
+                                txLength,
+                                UART_TX_TIMEOUT_MS);
     }
 }
 
